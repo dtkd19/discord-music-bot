@@ -125,25 +125,33 @@ async def on_message(message):
 
 async def play_next_song(voice_client):
     global current_song, current_song_message, playlist_embed_messages
+    
+    # [수정 1] 현재 봇이 있는 텍스트 채널 찾기
+    text_channel = None
+    for channel in bot.get_all_channels():
+        if isinstance(channel, discord.TextChannel) and channel.id in TARGET_CHANNEL_IDS:
+            text_channel = channel
+            break
+    
     if playlist:
-        next_song = playlist.pop(0)
+        next_song = playlist.pop(0)  # 한 곡만 pop(0)으로 재생
         current_song = next_song
         voice_client.play(next_song, after=lambda e: bot.loop.create_task(play_next_song(voice_client)))
         
-        # 재생 시작 시 플레이리스트 embed 메시지 삭제
+        # [수정 2] 플레이리스트 메시지 삭제 및 갱신
         if playlist_embed_messages:
-            for msg in playlist_embed_messages:
-                try:
-                    await msg.delete()
-                except Exception:
-                    pass
-            playlist_embed_messages.clear()
+            try:
+                for msg in playlist_embed_messages:
+                    await msg.delete()  # 플레이리스트 메시지 삭제
+            except:
+                pass
+            playlist_embed_messages.clear()  # 메시지 목록 초기화
 
-        # 새 embed 메시지 생성
+        # 새 Embed 생성
         embed = discord.Embed(title=f"🎵 현재 재생: {current_song.title}", color=0x1abc9c)
         if current_song.data.get("thumbnail"):
             embed.set_image(url=current_song.data["thumbnail"])
-        
+
         buttons = [
             discord.ui.Button(label="재생", style=discord.ButtonStyle.green, custom_id="resume"),
             discord.ui.Button(label="멈춤", style=discord.ButtonStyle.red, custom_id="pause"),
@@ -155,33 +163,29 @@ async def play_next_song(voice_client):
         for button in buttons:
             view.add_item(button)
 
-        # 현재 embed 메시지가 있으면 삭제하지 않고 업데이트(edit)하기
-        if current_song_message:
-            try:
+        try:
+            if current_song_message:
                 await current_song_message.edit(embed=embed, view=view)
-            except Exception as e:
-                print("Embed 메시지 수정 실패:", e)
-        else:
-            # embed 메시지가 없다면 새로 보냄 (예시로 첫 TARGET_CHANNEL에 전송)
-            for channel in bot.get_all_channels():
-                if isinstance(channel, discord.TextChannel) and channel.id in TARGET_CHANNEL_IDS:
-                    current_song_message = await channel.send(embed=embed, view=view)
-                    break
+            else:
+                if text_channel:
+                    current_song_message = await text_channel.send(embed=embed, view=view)
+        except discord.NotFound:
+            if text_channel:
+                current_song_message = await text_channel.send(embed=embed, view=view)
+
     else:
-        # 플레이리스트가 비었을 경우에만 embed 메시지를 삭제
         current_song = None
         if current_song_message:
             try:
                 await current_song_message.delete()
-            except Exception:
+            except:
                 pass
             current_song_message = None
-        for channel in bot.get_all_channels():
-            if isinstance(channel, discord.TextChannel) and channel.id in TARGET_CHANNEL_IDS:
-                message = await channel.send("🎶 모든 노래가 끝났습니다. 재생할 노래가 없습니다.")
-                await asyncio.sleep(3)  # 3초 동안 메시지를 유지
-                await message.delete()  # 3초 후 메시지 삭제
-
+        
+        if text_channel:
+            msg = await text_channel.send("🎶 모든 노래가 끝났습니다.")
+            await asyncio.sleep(3)
+            await msg.delete()
 
 @bot.event
 async def on_interaction(interaction):
@@ -193,25 +197,34 @@ async def on_interaction(interaction):
         if custom_id == "pause":
             if voice_client.is_playing():
                 voice_client.pause()
-                await interaction.response.send_message("⏸️ 일시정지 되었습니다.")
+                response = await interaction.response.send_message("⏸️ 일시정지 되었습니다.")
+                await asyncio.sleep(3)
+                await response.delete()
             else:
-                await interaction.response.send_message("❗ 재생 중인 노래가 없습니다.")
+                response = await interaction.response.send_message("❗ 재생 중인 노래가 없습니다.")
+                await asyncio.sleep(3)
+                await response.delete()
         
         elif custom_id == "resume":
             if voice_client.is_paused():
                 voice_client.resume()
-                await interaction.response.send_message("▶️ 재생을 재개합니다.")
+                response = await interaction.response.send_message("▶️ 재생을 재개합니다.")
+                await asyncio.sleep(3)
+                await response.delete()
             else:
-                await interaction.response.send_message("❗ 일시정지 상태가 아닙니다.")
-        
+                response = await interaction.response.send_message("❗ 일시정지 상태가 아닙니다.")
+                await asyncio.sleep(3)
+                await response.delete()
+    
         elif custom_id == "skip":
             if voice_client.is_playing() or voice_client.is_paused():
                 voice_client.stop()
-                bot.loop.create_task(play_next_song(voice_client))
-                await interaction.response.send_message("⏭️ 곡을 스킵했습니다.")
+                # voice_client.stop()이 after 콜백을 호출하므로, 여기서 play_next_song을 직접 호출할 필요가 없습니다.
+                await interaction.response.send_message("⏭️ 곡을 스킵합니다...", delete_after=2)
             else:
-                await interaction.response.send_message("❗ 재생 중인 곡이 없습니다.")
-                
+                await interaction.response.send_message("❗ 재생 중인 곡이 없습니다.", delete_after=3)
+
+
         elif custom_id == "playlist":
             if playlist:
                 playlist_titles = "\n".join(f"{i+1}. {song.title}" for i, song in enumerate(playlist))
@@ -220,7 +233,9 @@ async def on_interaction(interaction):
                 await interaction.response.send_message(embed=embed)
                 # 만약 나중에 이 메시지를 삭제하고 싶다면, 봇이 보낸 메시지를 따로 저장하는 방법이 필요합니다.
             else:
-                await interaction.response.send_message("📜 플레이리스트가 비어있습니다.")
+                response = await interaction.response.send_message("📜 플레이리스트가 비어있습니다.")
+                await asyncio.sleep(3)
+                await response.delete()     
         
         elif custom_id == "playlist_edit":
             if playlist:
@@ -234,21 +249,37 @@ async def on_interaction(interaction):
                     max_values=1,
                     options=options
                 )
+
                 async def select_callback(interaction):
                     index = int(select.values[0])
                     song_to_delete = playlist.pop(index)
-                    await interaction.response.send_message(f"🎶 **{song_to_delete.title}** 이(가) 플레이리스트에서 삭제되었습니다.")
+                    delete_message = await interaction.response.send_message(
+                        f"🎶 **{song_to_delete.title}** 이(가) 플레이리스트에서 삭제되었습니다."
+                    )
+                    await asyncio.sleep(3)
+                    await delete_message.delete()  # 3초 후 삭제
+
                     if playlist:
                         playlist_titles = "\n".join(f"{i+1}. {song.title}" for i, song in enumerate(playlist))
                         embed = discord.Embed(title="🎶 플레이리스트", description=playlist_titles, color=0x1abc9c)
-                        await interaction.followup.send(embed=embed)
+                        playlist_message = await interaction.followup.send(embed=embed)
+                        await asyncio.sleep(3)
+                        await playlist_message.delete()  # 3초 후 삭제
                     else:
-                        await interaction.followup.send("📜 플레이리스트가 비어있습니다.")
+                        empty_message = await interaction.followup.send("📜 플레이리스트가 비어있습니다.")
+                        await asyncio.sleep(3)
+                        await empty_message.delete()  # 3초 후 삭제
+
                 select.callback = select_callback
                 view = discord.ui.View()
                 view.add_item(select)
-                await interaction.response.send_message("삭제할 곡을 선택하세요:", view=view)
+
+                select_message = await interaction.response.send_message("삭제할 곡을 선택하세요:", view=view)
+                await asyncio.sleep(10)  # 10초 동안 유지 후 삭제
+                await select_message.delete()  # 드롭다운 메시지 삭제
             else:
-                await interaction.response.send_message("❗ 플레이리스트에 노래가 없습니다.")
+                no_playlist_message = await interaction.response.send_message("❗ 플레이리스트에 노래가 없습니다.")
+                await asyncio.sleep(3)
+                await no_playlist_message.delete()  # 3초 후 삭제
 
 bot.run(TOKEN)
