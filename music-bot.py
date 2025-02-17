@@ -15,7 +15,7 @@ intents = discord.Intents.all()
 bot = commands.Bot(command_prefix="!", intents=intents)
 
 
-TARGET_CHANNEL_IDS = [1339069701527044149, 1250860258604351654, 1339803258155307130]
+TARGET_CHANNEL_IDS = [1339069701527044149, 1250860258604351654, 1339803258155307130, 1340382563830730813]
 
 ytdl_format_options = {
     'format': 'bestaudio/best',
