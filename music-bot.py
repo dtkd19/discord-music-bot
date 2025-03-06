@@ -48,13 +48,17 @@ class YTDLSource(discord.PCMVolumeTransformer):
     @classmethod
     async def from_query(cls, query, *, loop=None, stream=False):
         loop = loop or asyncio.get_event_loop()
-        data = await loop.run_in_executor(None, lambda: ytdl.extract_info(f"ytsearch:{query}", download=not stream))
+        # URL인지 체크: 'http://' 또는 'https://'로 시작하면 URL로 판단
+        if query.startswith("http://") or query.startswith("https://"):
+            info = await loop.run_in_executor(None, lambda: ytdl.extract_info(query, download=not stream))
+        else:
+            info = await loop.run_in_executor(None, lambda: ytdl.extract_info(f"ytsearch:{query}", download=not stream))
         
-        if 'entries' in data:
-            data = data['entries'][0]
+        if 'entries' in info:
+            info = info['entries'][0]
 
-        filename = data['url'] if stream else ytdl.prepare_filename(data)
-        return cls(discord.FFmpegPCMAudio(filename, **ffmpeg_options), data=data)
+        filename = info['url'] if stream else ytdl.prepare_filename(info)
+        return cls(discord.FFmpegPCMAudio(filename, **ffmpeg_options), data=info)
 
 playlist = []
 current_song = None
