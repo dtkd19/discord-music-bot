@@ -10,6 +10,7 @@ load_dotenv()
 
 # 환경 변수에서 토큰 가져오기
 TOKEN = os.getenv("DISCORD_BOT_TOKEN")
+YOUTUBE_API_KEY = os.getenv("YOUTUBE_API_KEY")
 
 intents = discord.Intents.all()
 bot = commands.Bot(command_prefix="!", intents=intents)
@@ -28,7 +29,7 @@ ytdl_format_options = {
     'quiet': True,
     'no_warnings': True,
     'default_search': 'ytsearch1:',
-    'source_address': '0.0.0.0'
+    'source_address': '0.0.0.0',
 }
 
 ffmpeg_options = {
@@ -127,69 +128,179 @@ async def on_message(message):
     except Exception:
         pass
 
+def get_related_videos(video_id):
+    url = f"https://www.youtube.com/watch?v={video_id}"
+    ydl_opts = {
+        'quiet': True,
+        'extract_flat': False,
+        'force_generic_extractor': False,
+        'compat_opts': {'no-youtube-channel-redirect': True},
+        'extract_args': {'skip_download': True}
+    }
+
+    try:
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            info = ydl.extract_info(url, download=False)
+            
+            related_videos = []
+            if 'related_videos' in info:
+                related_videos = info['related_videos']
+            elif 'entries' in info:
+                related_videos = info['entries']
+            
+            # 웹페이지 파싱 (requests 사용)
+            if not related_videos:
+                print("[DEBUG] requests로 웹페이지 파싱 시도")
+                import requests
+                import re  # 정규식 사용을 위해 추가
+                headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'}
+                response = requests.get(url, headers=headers)
+                response.raise_for_status()
+                webpage = response.text
+                
+                # 정규식으로 ytInitialData 추출
+                initial_data_str = re.search(
+                    r'ytInitialData\s*=\s*({.+?});', 
+                    webpage, 
+                    re.DOTALL
+                )
+                if initial_data_str:
+                    initial_data_str = initial_data_str.group(1)
+                    import json
+                    initial_data = json.loads(initial_data_str)
+                    # 관련 영상 경로 확인 필요
+                    related_items = initial_data.get('contents', {}).get('twoColumnWatchNextResults', {}).get('secondaryResults', {}).get('secondaryResults', {}).get('results', [])
+                    for item in related_items:
+                        if 'compactVideoRenderer' in item:
+                            video = item['compactVideoRenderer']
+                            video_id = video.get('videoId')
+                            title_runs = video.get('title', {}).get('runs', [{}])
+                            title = title_runs[0].get('text', '제목 없음') if title_runs else '제목 없음'
+                            related_videos.append({
+                                'id': video_id,
+                                'title': title,
+                                'url': f"https://youtube.com/watch?v={video_id}"
+                            })
+                else:
+                    print("[ERROR] ytInitialData를 찾을 수 없음")
+
+            return [
+                entry
+                for entry in related_videos[:5]
+                if entry.get('id') and entry.get('id') != video_id
+            ]
+            
+    except Exception as e:
+        print(f"[ERROR] 관련 영상 추출 실패: {str(e)}")
+        return []
+
 async def play_next_song(voice_client):
     global current_song, current_song_message, playlist_embed_messages
     
-    # [수정 1] 현재 봇이 있는 텍스트 채널 찾기
+    # 텍스트 채널 찾기
     text_channel = None
     for channel in bot.get_all_channels():
         if isinstance(channel, discord.TextChannel) and channel.id in TARGET_CHANNEL_IDS:
             text_channel = channel
             break
-    
+
     if playlist:
-        next_song = playlist.pop(0)  # 한 곡만 pop(0)으로 재생
+        next_song = playlist.pop(0)  # 플레이리스트에 있으면 다음 곡 재생
         current_song = next_song
         voice_client.play(next_song, after=lambda e: bot.loop.create_task(play_next_song(voice_client)))
         
-        # [수정 2] 플레이리스트 메시지 삭제 및 갱신
+        # 플레이리스트 관련 메시지 삭제 및 초기화
         if playlist_embed_messages:
-            try:
-                for msg in playlist_embed_messages:
-                    await msg.delete()  # 플레이리스트 메시지 삭제
-            except:
-                pass
-            playlist_embed_messages.clear()  # 메시지 목록 초기화
+            for msg in playlist_embed_messages:
+                try:
+                    await msg.delete()
+                except:
+                    pass
+            playlist_embed_messages.clear()
+    else:
+        if current_song:
+            current_video_id = current_song.data.get("id")
+            if not current_video_id:
+                current_video_id = extract_video_id(current_song.url)
 
-        # 새 Embed 생성
-        embed = discord.Embed(title=f"🎵 현재 재생: {current_song.title}", color=0x1abc9c)
-        if current_song.data.get("thumbnail"):
-            embed.set_image(url=current_song.data["thumbnail"])
+            # 디버깅 메시지 전송 (채널에 표시)
+            debug_embed = discord.Embed(title="🔍 디버깅 정보", color=0xffd700)
+            debug_embed.add_field(name="현재 영상 ID", value=f"`{current_video_id}`", inline=False)
+            
+            related_videos = get_related_videos(current_video_id)
+            debug_embed.add_field(
+                name="찾은 관련 영상", 
+                value=f"개수: {len(related_videos)}\n" + "\n".join([f"- {v['title']} ({v['id']})" for v in related_videos[:3]]),
+                inline=False
+            )
 
-        buttons = [
-            discord.ui.Button(label="재생", style=discord.ButtonStyle.green, custom_id="resume"),
-            discord.ui.Button(label="멈춤", style=discord.ButtonStyle.red, custom_id="pause"),
-            discord.ui.Button(label="스킵", style=discord.ButtonStyle.blurple, custom_id="skip"),
-            discord.ui.Button(label="플레이리스트", style=discord.ButtonStyle.grey, custom_id="playlist"),
-            discord.ui.Button(label="플레이리스트 수정", style=discord.ButtonStyle.blurple, custom_id="playlist_edit")
-        ]
-        view = discord.ui.View()
-        for button in buttons:
-            view.add_item(button)
+            if related_videos:
+                next_video = related_videos[0]  # 첫 번째 영상 선택
+                video_url = next_video['url']
+                print(f"다음 재생 시도 URL: {video_url}")
 
-        try:
-            if current_song_message:
-                await current_song_message.edit(embed=embed, view=view)
+                try:
+                    next_song = await YTDLSource.from_query(video_url, loop=bot.loop, stream=True)
+                    current_song = next_song
+                    voice_client.play(next_song, after=lambda e: bot.loop.create_task(play_next_song(voice_client)))
+                except Exception as e:
+                    if text_channel:
+                        error_msg = await text_channel.send("❗ 자동재생에 실패했습니다. 다시 시도해주세요.")
+                        await asyncio.sleep(3)
+                        await error_msg.delete()
+                        current_song = None
+                    if current_song_message:
+                        try:
+                            await current_song_message.delete()
+                        except:
+                            pass
+                        return
             else:
                 if text_channel:
-                    current_song_message = await text_channel.send(embed=embed, view=view)
-        except discord.NotFound:
-            if text_channel:
-                current_song_message = await text_channel.send(embed=embed, view=view)
+                    msg = await text_channel.send("🎶 관련 영상을 찾을 수 없습니다.")
+                    await asyncio.sleep(3)
+                    await msg.delete()
 
-    else:
-        current_song = None
+        else:
+            if text_channel:
+                msg = await text_channel.send("🎶 모든 노래가 끝났습니다.")
+                await asyncio.sleep(3)
+                await msg.delete()
+            return
+
+    # 새 Embed 생성 및 버튼 업데이트
+    embed = discord.Embed(title=f"🎵 현재 재생: {current_song.title}", color=0x1abc9c)
+    if current_song.data.get("thumbnail"):
+        embed.set_image(url=current_song.data["thumbnail"])
+
+    buttons = [
+        discord.ui.Button(label="재생", style=discord.ButtonStyle.green, custom_id="resume"),
+        discord.ui.Button(label="멈춤", style=discord.ButtonStyle.red, custom_id="pause"),
+        discord.ui.Button(label="스킵", style=discord.ButtonStyle.blurple, custom_id="skip"),
+        discord.ui.Button(label="플레이리스트", style=discord.ButtonStyle.grey, custom_id="playlist"),
+        discord.ui.Button(label="플레이리스트 수정", style=discord.ButtonStyle.blurple, custom_id="playlist_edit")
+    ]
+    view = discord.ui.View()
+    for button in buttons:
+        view.add_item(button)
+
+    try:
         if current_song_message:
-            try:
-                await current_song_message.delete()
-            except:
-                pass
-            current_song_message = None
-        
+            await current_song_message.edit(embed=embed, view=view)
+        elif text_channel:
+            current_song_message = await text_channel.send(embed=embed, view=view)
+    except discord.NotFound:
         if text_channel:
-            msg = await text_channel.send("🎶 모든 노래가 끝났습니다.")
-            await asyncio.sleep(3)
-            await msg.delete()
+            current_song_message = await text_channel.send(embed=embed, view=view)
+
+def extract_video_id(url):
+    """유튜브 URL로부터 videoId를 추출하는 간단한 함수 (필요 시 개선)"""
+    import re
+    pattern = r"(?:v=|\/)([0-9A-Za-z_-]{11}).*"
+    match = re.search(pattern, url)
+    if match:
+        return match.group(1)
+    return None
 
 @bot.event
 async def on_interaction(interaction):
